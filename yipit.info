@@ -1,0 +1,10 @@
+name = yipit for winemaps
+description = yipit integration for travel deals
+core = 7.x
+package = custom
+
+dependencies[] = ultimate_cron
+dependencies[] = queue_ui
+
+configure = admin/config/services/yipit
+

@@ -1,0 +1,17 @@
+<?php
+
+/**
+ * Implements hook_install().
+ */
+function yipit_install() {
+	$queue = DrupalQueue::get('yipit_import_deal_data');
+	$queue->createQueue();
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function yipit_uninstall() {
+	$queue = DrupalQueue::get('yipit_import_deal_data');
+	$queue->deleteQueue();
+}

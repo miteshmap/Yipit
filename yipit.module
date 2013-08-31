@@ -1,0 +1,214 @@
+<?php
+
+module_load_include('inc', 'yipit', 'yipit.field');
+
+/**
+ * Implimentation of hook_menu
+*/
+function yipit_menu(){
+
+	$items['admin/config/services/yipit'] = array(
+		'title' => t('Yipit Configuration'),
+		'description' => 'Configuration settings for Yipit API',
+		'page callback' => 'drupal_get_form',
+		'page arguments' => array('yipit_admin_settings_form'),
+		'access arguments' => array('administer site configuration'),
+		'file' => 'yipit.admin.inc',
+		'type' => MENU_NORMAL_ITEM,
+	);
+
+	$items['yipit/fetch-data'] = array(
+		'title' => t('Yipit fetch Data'),
+		'description' => 'fetch data from yipit and store it as node',
+		'page callback' => 'yipit_read_deal_data',
+		'access arguments' => array('administer site configuration'),
+		'type' => MENU_CALLBACK,
+	);
+
+	return $items;
+}
+
+function yipit_read_deal_data($start = 0){
+
+	$dealurl = variable_get('yipit_deals_url','');
+	$key = variable_get('yipit_key','');
+	$tags = variable_get('yipit_deals_tags','');
+	$limit = variable_get('yipit_deals_limit','');
+	$paid = variable_get('yipit_deals_paid','');
+	$source = variable_get('yipit_deals_source','');
+	$division = variable_get('yipit_deals_division','');
+
+	$dataArray = array();
+
+	$dataArray[] = 'key='.$key;
+	$dataArray[] = 'tag='.$tags;
+
+	if(!empty($paid))
+		$dataArray[] = 'paid='.$paid;
+
+	if(!empty($limit))
+		$dataArray[] = 'limit='.$limit;
+
+	if(!empty($source))
+		$dataArray[] = 'source='.$source;
+
+	if(!empty($division))
+		$dataArray[] = 'division='.$division;
+
+	$finalurl = $dealurl.'?'.join('&',$dataArray);
+	yipit_fetch_api_data($finalurl);
+
+	return '';
+}
+
+
+function yipit_fetch_api_data($finalurl){
+
+		$options = array('method' => 'GET',
+									'timeout' => 300,
+									'headers' => array('Content-Type' => 'application/x-www-form-urlencoded'));
+
+	$result = drupal_http_request($finalurl, $options);
+	if($result->code == 200){
+			$response = drupal_json_decode($result->data);
+			if($response['meta']['code'] != 200) {
+				$message = 'Error - '. $response['meta']['code'] .':'. $response['meta']['message'];
+				drupal_set_message($message, 'error');
+			}
+			else{
+				foreach($response['response']['deals'] as $deal){
+					//yipit_deal_node_object($deal);
+					$deal['type'] = 'deals';
+					yipit_create_item_queue($deal);
+				}
+				if(!empty($response['meta']['next'])){
+					yipit_fetch_api_data($response['meta']['next']);
+				}
+			}
+	}
+
+}
+
+
+function yipit_deal_node_object($deal){
+
+	$node = new stdClass();
+	$node->title = $deal['yipit_title'];
+	$node->field_sub_title[LANGUAGE_NONE][0]['value'] = $deal['title'];
+	$node->status = $deal['active'];
+	$node->type = 'deals';
+	$node->language = LANGUAGE_NONE;
+	$node->created = strtotime($deal['date_added']);
+	$node->field_yipit_id[LANGUAGE_NONE][0]['value'] = $deal['id'];
+	$node->body[LANGUAGE_NONE][0]['value'] = $deal['description'];
+	$node->body[LANGUAGE_NONE][0]['format'] = 'full_html';
+	$node->field_address[LANGUAGE_NONE] =  yipit_save_location($deal['business']['locations']);
+	$node->field_tags[LANGUAGE_NONE][0]['tid'] = yipit_term_reference_value($deal['tags'][0]['name']);
+	$node->field_price[LANGUAGE_NONE][0]['value'] = $deal['price']['raw'];
+	$node->field_original_price[LANGUAGE_NONE][0]['value'] = $deal['value']['raw'];
+	$node->field_discount[LANGUAGE_NONE][0]['value'] = $deal['discount']['raw'];
+	$node->field_source[LANGUAGE_NONE][0]['value'] = $deal['source']['name'];
+	$node->field_end_date[LANGUAGE_NONE][0]['value'] = strtotime($deal['end_date']);
+	$node->field_post_date[LANGUAGE_NONE][0]['value'] = strtotime($deal['date_added']);
+	$node->field_url[LANGUAGE_NONE][0]['value'] = $deal['url'];
+	$node->field_yipit_url[LANGUAGE_NONE][0]['value'] = $deal['yipit_url'];
+	$node->field_image_big[LANGUAGE_NONE][0]['value'] = $deal['images']['image_big'];
+	$node->field_image_smart[LANGUAGE_NONE][0]['value'] = $deal['images']['image_smart'];
+	$node->field_image_small[LANGUAGE_NONE][0]['value'] = $deal['images']['image_small'];
+	$node->field_business_name[LANGUAGE_NONE][0]['value'] = $deal['business']['name'];
+	$node->field_business_url[LANGUAGE_NONE][0]['value'] = $deal['business']['url'];
+	node_object_prepare($node);
+	node_save($node);
+}
+
+//store location field values generate lid and return formated array
+function yipit_save_location($address){
+
+	$lids = array();
+
+	foreach($address as $add){
+		//$location['name'] = $add['name'];
+		$location['street'] = $add['address'];
+		$location['city'] = $add['locality'];
+		$location['province'] = $add['state'];
+		$location['postal_code'] = $add['zip_code'];
+		$location['country'] = 'us';
+		$location['latitude'] = $add['lat'];
+		$location['longitude'] = $add['lon'];
+
+		$lid = location_save($location);
+		$lids[] = location_load_location($lid);
+	}
+	return $lids;
+}
+
+
+//check the term is exist generate in field format
+function yipit_term_reference_value($termData){
+
+	$voc = taxonomy_vocabulary_machine_name_load('tags');
+	$term = taxonomy_get_term_by_name($termData,$voc);
+
+	if(!empty($term)){
+		return $term[key($term)]->tid;
+	}
+	else{
+		$term = new stdClass();
+		$term->name = $termData;
+		$term->vid = $voc->vid;
+		taxonomy_term_save($term);
+		return $term->tid;
+	}
+
+}
+
+
+/**
+ * Implements hook_cronapi().
+ */
+function yipit_cronapi($op, $job = NULL) {
+	switch ($op) {
+		case 'list':
+			return array(
+				'yipit_import_deal_data' => t('save data to node fetched from yipit '),
+			);
+			break;
+		case 'rule':
+			switch ($job) {
+				case 'yipit_import_deal_data': return '5,10,15,20,25,35,40 * * * *';
+			}
+			break;
+		 case 'execute':
+			switch ($job) {
+				case 'yipit_import_deal_data':
+					yipit_cron_node_save_data();
+					break;
+			}
+			break;
+	}
+}
+
+
+function yipit_create_item_queue($item) {
+	$queue = DrupalQueue::get('yipit_import_deal_data');
+	$queue->createItem($item);
+}
+
+
+function yipit_cron_node_save_data(){
+	$queue = DrupalQueue::get('yipit_import_deal_data');
+	$i = 0;
+	while ($item = $queue->claimItem(300)) {
+		if($i >= 50){
+			break;
+		}
+		switch ($item->data['type']) {
+			case 'deals':
+				yipit_deal_node_object($item->data);
+				$queue->deleteItem($item);
+			break;
+	  }
+	  $i++;
+	}
+}
+
